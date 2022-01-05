@@ -38,7 +38,6 @@ var opts struct {
 var (
 	slowQueries = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Namespace: "absolute",
 			Subsystem: "mongo",
 			Name:      "slow_query_microsecs",
 			Help:      "microseconds of slow query, according to db.currentOp()",
