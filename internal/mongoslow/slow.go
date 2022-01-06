@@ -1,9 +1,12 @@
 package mongoslow
 
 import (
+	"container/ring"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -15,12 +18,42 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+var (
+	// length of history of slow queries to keep
+	HistoryLen            int   = 100     // number of items
+	HistoryQueryThreshold int64 = 5000000 // microsecs, think this is 5s
+)
+
+func SlowQueryHandler(slow *MongoSlow) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		json.NewEncoder(w).Encode(slow.runningQueries)
+	}
+}
+
+func HistoryQueryHandler(slow *MongoSlow) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		var queries []primitive.M
+		slow.history.Do(func(p interface{}) {
+			if p != nil {
+				queries = append(queries, p.(primitive.M))
+			}
+		})
+		json.NewEncoder(w).Encode(queries)
+	}
+}
+
 // MongoSlow holds the state of slow queries, we have to keep state as we poll every x seconds and want to emit the
 // cumulative slow query time for each user/connection/query.
 type MongoSlow struct {
+	ThresholdMicros   int
+	QueryCounter      *prometheus.CounterVec   // prometheus counter, for running queries
+	QueryHistogram    *prometheus.HistogramVec // prometheus histogram, for completed queries
 	client            *mongo.Client
-	QueryCounter      *prometheus.CounterVec // prometheus counter
-	runningQueryTimes map[int32]int64        // opid to microsecs_running map so we can measure how long something is running for
+	runningQueryTimes map[int32]int64 // opid to microsecs_running map so we can measure how long something is running for
+	runningQueries    map[int32]primitive.M
+	history           *ring.Ring // history of slow queries
 }
 
 func New(uri, host, user, pass string, port int32) (*MongoSlow, error) {
@@ -43,6 +76,8 @@ func New(uri, host, user, pass string, port int32) (*MongoSlow, error) {
 
 	s := &MongoSlow{}
 	s.runningQueryTimes = make(map[int32]int64)
+	s.runningQueries = make(map[int32]primitive.M)
+	s.history = ring.New(HistoryLen)
 	s.client = c
 	return s, nil
 }
@@ -70,43 +105,56 @@ func (s *MongoSlow) Run(interval time.Duration) error {
 				continue
 			}
 
-			q.EffectiveUser = trimRandomBytes(q.EffectiveUser)
-
 			lastMicrosecs, ok := s.runningQueryTimes[q.OperationID]
 			if ok {
-				var delta int64
-				delta = q.RunningMicros - lastMicrosecs
+				q.DeltaMicros = q.RunningMicros - lastMicrosecs
 				log.Info().
 					Str("user", q.EffectiveUser).
 					Str("op", q.Operation).
 					Int32("opid", q.OperationID).
 					Int64("last_microsecs_running", lastMicrosecs).
 					Int64("microsecs_running", q.RunningMicros).
-					Int64("delta", delta).
+					Int64("delta", q.DeltaMicros).
 					Msg("query still running")
-				q.Inc(s.QueryCounter)
 			} else {
-				log.Info().Str("user", q.EffectiveUser).
+				log.Debug().Str("user", q.EffectiveUser).
 					Str("op", q.Operation).
 					Int32("opid", q.OperationID).Msg("new query started")
 				q.DeltaMicros = q.RunningMicros
-				q.Inc(s.QueryCounter)
 			}
 
+			q.Inc(s.QueryCounter)
+
 			s.runningQueryTimes[q.OperationID] = q.RunningMicros
+			s.runningQueries[q.OperationID] = query.(primitive.M)
 			currentQueryOpIDs[q.OperationID] = true
 		}
 
 		for opid, _ := range s.runningQueryTimes {
 			_, ok := currentQueryOpIDs[opid]
 			if !ok {
-				log.Info().Int32("opid", opid).Msg("query no longer running")
+				log.Debug().Int32("opid", opid).Msg("query no longer running")
+				// see if we should add it to the history
+				microsecs := s.runningQueryTimes[opid]
+				q, _ := Parse(s.runningQueries[opid])
+				q.Observe(s.QueryHistogram)
+				if microsecs > HistoryQueryThreshold {
+					if q.Namespace != "admin.$cmd" { // skip system queries in the history
+						s.History(q.Raw)
+					}
+				}
 				delete(s.runningQueryTimes, opid)
+				delete(s.runningQueries, opid)
 			}
 		}
 
 		time.Sleep(interval)
 	}
+}
+
+func (s *MongoSlow) History(query primitive.M) {
+	s.history.Value = query
+	s.history = s.history.Next()
 }
 
 // Query object to hold current query details for feeding to Prometheus metrics
@@ -117,10 +165,22 @@ type Query struct {
 	DeltaMicros   int64  // delta from last check in microseconds
 	Operation     string // op:
 	Namespace     string // ns:
+	Raw           primitive.M
 }
 
+// Observe updates the histogram with completed queries - use to get a view of slow completed queries
+func (q *Query) Observe(histogram *prometheus.HistogramVec) {
+	if q.RunningMicros > 500000 {
+		histogram.WithLabelValues(q.EffectiveUser, q.Operation, q.Namespace).Observe(float64(q.RunningMicros) / 1000000)
+	}
+}
+
+// Inc updates the query counter for running queries - use to get real time data on running slow queries
 func (q *Query) Inc(counter *prometheus.CounterVec) {
-	counter.WithLabelValues(q.EffectiveUser, q.Operation, q.Namespace).Add(float64(q.DeltaMicros))
+	if q.DeltaMicros < 10000 { // if we are just picking up just executed queries, skip them
+		return
+	}
+	counter.WithLabelValues(q.EffectiveUser, q.Operation, q.Namespace).Add(float64(q.DeltaMicros) / 1000) // change to milliseconds
 }
 
 func trimRandomBytes(user string) string {
@@ -133,6 +193,8 @@ func trimRandomBytes(user string) string {
 
 func Parse(query primitive.M) (*Query, error) {
 	q := &Query{}
+	q.Raw = query
+
 	opid, ok := query["opid"]
 	if !ok {
 		return nil, errors.New("missing opid field")
@@ -163,6 +225,7 @@ func Parse(query primitive.M) (*Query, error) {
 	}
 	user := effectiveUsers.(primitive.A)[0]
 	q.EffectiveUser = user.(primitive.M)["user"].(string)
+	q.EffectiveUser = trimRandomBytes(q.EffectiveUser)
 
 	return q, nil
 }

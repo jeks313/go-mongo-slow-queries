@@ -36,11 +36,20 @@ var opts struct {
 }
 
 var (
-	slowQueries = promauto.NewCounterVec(
+	slowQueryCounter = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Subsystem: "mongo",
-			Name:      "slow_query_microsecs",
-			Help:      "microseconds of slow query, according to db.currentOp()",
+			Name:      "slow_query_ms",
+			Help:      "milliseconds of slow query, according to db.currentOp(), use to get a real time view of running slow queries",
+		},
+		[]string{"user", "operation", "ns"},
+	)
+	slowQueryHistogram = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Subsystem: "mongo",
+			Name:      "slow_query_secs",
+			Help:      "seconds of slow query histogram, use to get a view of completed slow queries",
+			Buckets:   []float64{1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 		},
 		[]string{"user", "operation", "ns"},
 	)
@@ -118,20 +127,25 @@ func main() {
 		}
 	}()
 
-	go func(ctx context.Context, counter *prometheus.CounterVec) {
-		slow, err := mongoslow.New(opts.Mongo.URI, opts.Mongo.User, opts.Mongo.Pass, opts.Mongo.Host, opts.Mongo.Port)
-		if err != nil {
-			log.Error().Err(err).Msg("failed to setup mongo")
-			os.Exit(1)
-		}
+	slow, err := mongoslow.New(opts.Mongo.URI, opts.Mongo.User, opts.Mongo.Pass, opts.Mongo.Host, opts.Mongo.Port)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to setup mongo")
+		os.Exit(1)
+	}
+
+	r.HandleFunc("/running", mongoslow.SlowQueryHandler(slow))
+	r.HandleFunc("/history", mongoslow.HistoryQueryHandler(slow))
+
+	go func(ctx context.Context, counter *prometheus.CounterVec, histogram *prometheus.HistogramVec) {
 		slow.QueryCounter = counter
-		err = slow.Run(5 * time.Second)
+		slow.QueryHistogram = slowQueryHistogram
+		err = slow.Run(2 * time.Second)
 		if err != nil {
 			log.Error().Err(err).Msg("run loop failed")
 			cancel()
 			srv.Shutdown(ctx)
 		}
-	}(ctx, slowQueries)
+	}(ctx, slowQueryCounter, slowQueryHistogram)
 
 	log.Info().Int("port", opts.Port).Msg("started server ...")
 
@@ -141,5 +155,4 @@ func main() {
 	}
 
 	log.Info().Msg("stopped")
-
 }

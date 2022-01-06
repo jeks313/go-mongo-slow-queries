@@ -35,7 +35,7 @@ func Log(r *mux.Router, log zerolog.Logger) {
 			Str("url", r.URL.String()).
 			Int("status", status).
 			Int("size", size).
-			Dur("duration", duration).
+			Dur("duration_ms", duration).
 			Msg("request")
 	}))
 	r.Use(hlog.RemoteAddrHandler("ip"))
