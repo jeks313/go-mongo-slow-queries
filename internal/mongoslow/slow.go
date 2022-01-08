@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -20,29 +19,9 @@ import (
 
 var (
 	// length of history of slow queries to keep
-	HistoryLen            int   = 100     // number of items
+	HistoryLen            int   = 1000    // number of items
 	HistoryQueryThreshold int64 = 5000000 // microsecs, think this is 5s
 )
-
-func SlowQueryHandler(slow *MongoSlow) func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		json.NewEncoder(w).Encode(slow.runningQueries)
-	}
-}
-
-func HistoryQueryHandler(slow *MongoSlow) func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		var queries []primitive.M
-		slow.history.Do(func(p interface{}) {
-			if p != nil {
-				queries = append(queries, p.(primitive.M))
-			}
-		})
-		json.NewEncoder(w).Encode(queries)
-	}
-}
 
 // MongoSlow holds the state of slow queries, we have to keep state as we poll every x seconds and want to emit the
 // cumulative slow query time for each user/connection/query.
@@ -52,23 +31,23 @@ type MongoSlow struct {
 	QueryHistogram    *prometheus.HistogramVec // prometheus histogram, for completed queries
 	client            *mongo.Client
 	runningQueryTimes map[int32]int64 // opid to microsecs_running map so we can measure how long something is running for
-	runningQueries    map[int32]primitive.M
+	runningQueries    map[int32]*Query
 	history           *ring.Ring // history of slow queries
 }
 
-func New(uri, host, user, pass string, port int32) (*MongoSlow, error) {
+func New(ctx context.Context, uri, host, user, pass string, port int32) (*MongoSlow, error) {
 	if uri == "" {
 		uri = fmt.Sprintf("mongodb://%s:%s@%s:%d/?directConnection=true", user, pass, host, port)
 	}
 	clientOptions := options.Client().ApplyURI(uri)
 
-	c, err := mongo.Connect(context.TODO(), clientOptions)
+	c, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Error().Str("uri", uri).Err(err).Msg("failed to connect to mongo")
 		return nil, err
 	}
 
-	err = c.Ping(context.TODO(), nil)
+	err = c.Ping(ctx, nil)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to ping mongo")
 		return nil, err
@@ -76,7 +55,7 @@ func New(uri, host, user, pass string, port int32) (*MongoSlow, error) {
 
 	s := &MongoSlow{}
 	s.runningQueryTimes = make(map[int32]int64)
-	s.runningQueries = make(map[int32]primitive.M)
+	s.runningQueries = make(map[int32]*Query)
 	s.history = ring.New(HistoryLen)
 	s.client = c
 	return s, nil
@@ -126,7 +105,7 @@ func (s *MongoSlow) Run(interval time.Duration) error {
 			q.Inc(s.QueryCounter)
 
 			s.runningQueryTimes[q.OperationID] = q.RunningMicros
-			s.runningQueries[q.OperationID] = query.(primitive.M)
+			s.runningQueries[q.OperationID] = q
 			currentQueryOpIDs[q.OperationID] = true
 		}
 
@@ -136,11 +115,11 @@ func (s *MongoSlow) Run(interval time.Duration) error {
 				log.Debug().Int32("opid", opid).Msg("query no longer running")
 				// see if we should add it to the history
 				microsecs := s.runningQueryTimes[opid]
-				q, _ := Parse(s.runningQueries[opid])
+				q := s.runningQueries[opid]
 				q.Observe(s.QueryHistogram)
 				if microsecs > HistoryQueryThreshold {
 					if q.Namespace != "admin.$cmd" { // skip system queries in the history
-						s.History(q.Raw)
+						s.History(q)
 					}
 				}
 				delete(s.runningQueryTimes, opid)
@@ -152,20 +131,21 @@ func (s *MongoSlow) Run(interval time.Duration) error {
 	}
 }
 
-func (s *MongoSlow) History(query primitive.M) {
+func (s *MongoSlow) History(query *Query) {
 	s.history.Value = query
 	s.history = s.history.Next()
 }
 
 // Query object to hold current query details for feeding to Prometheus metrics
 type Query struct {
-	OperationID   int32  // opid
-	EffectiveUser string // effectiveUsers:[map[db:admin user:auto-default-some-user-name-92c989781b97]]
-	RunningMicros int64  // microseconds_running (with state to get delta)
-	DeltaMicros   int64  // delta from last check in microseconds
-	Operation     string // op:
-	Namespace     string // ns:
-	Raw           primitive.M
+	OperationID   int32       `json:"opid"`           // opid
+	EffectiveUser string      `json:"effective_user"` // effectiveUsers:[map[db:admin user:auto-default-some-user-name-92c989781b97]]
+	RunningMicros int64       `json:"running_micros"` // microseconds_running (with state to get delta)
+	DeltaMicros   int64       `json:"delta_micros"`   // delta from last check in microseconds
+	Operation     string      `json:"op"`             // op
+	Namespace     string      `json:"ns"`             // ns
+	Command       string      `json:"command"`        // string representation of the command
+	Raw           primitive.M `json:"raw"`
 }
 
 // Observe updates the histogram with completed queries - use to get a view of slow completed queries
@@ -226,6 +206,11 @@ func Parse(query primitive.M) (*Query, error) {
 	user := effectiveUsers.(primitive.A)[0]
 	q.EffectiveUser = user.(primitive.M)["user"].(string)
 	q.EffectiveUser = trimRandomBytes(q.EffectiveUser)
+
+	command, err := json.Marshal(query["command"])
+	if err == nil {
+		q.Command = string(command)
+	}
 
 	return q, nil
 }

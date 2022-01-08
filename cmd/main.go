@@ -127,14 +127,17 @@ func main() {
 		}
 	}()
 
-	slow, err := mongoslow.New(opts.Mongo.URI, opts.Mongo.User, opts.Mongo.Pass, opts.Mongo.Host, opts.Mongo.Port)
+	log.Info().Msg("connecting to mongo ...")
+	slow, err := mongoslow.New(ctx, opts.Mongo.URI, opts.Mongo.User, opts.Mongo.Pass, opts.Mongo.Host, opts.Mongo.Port)
 	if err != nil {
 		log.Error().Err(err).Msg("failed to setup mongo")
 		os.Exit(1)
 	}
 
-	r.HandleFunc("/running", mongoslow.SlowQueryHandler(slow))
-	r.HandleFunc("/history", mongoslow.HistoryQueryHandler(slow))
+	r.HandleFunc("/running.json", mongoslow.SlowQueryHandler(slow))
+	r.HandleFunc("/running", mongoslow.RunningQueryTableHandler(slow))
+	r.HandleFunc("/history.json", mongoslow.HistoryQueryHandler(slow))
+	r.HandleFunc("/history", mongoslow.HistoryQueryTableHandler(slow))
 
 	go func(ctx context.Context, counter *prometheus.CounterVec, histogram *prometheus.HistogramVec) {
 		slow.QueryCounter = counter
