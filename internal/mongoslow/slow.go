@@ -109,16 +109,16 @@ func (s *MongoSlow) Run(interval time.Duration) error {
 			currentQueryOpIDs[q.OperationID] = true
 		}
 
-		for opid, _ := range s.runningQueryTimes {
+		for opid, microsecs := range s.runningQueryTimes {
 			_, ok := currentQueryOpIDs[opid]
 			if !ok {
 				log.Debug().Int32("opid", opid).Msg("query no longer running")
 				// see if we should add it to the history
-				microsecs := s.runningQueryTimes[opid]
 				q := s.runningQueries[opid]
 				q.Observe(s.QueryHistogram)
 				if microsecs > HistoryQueryThreshold {
 					if q.Namespace != "admin.$cmd" { // skip system queries in the history
+						log.Info().Int32("opid", opid).Msg("adding query to history")
 						s.History(q)
 					}
 				}
@@ -207,6 +207,8 @@ func Parse(query primitive.M) (*Query, error) {
 	q.EffectiveUser = user.(primitive.M)["user"].(string)
 	q.EffectiveUser = trimRandomBytes(q.EffectiveUser)
 
+	// hacky way of showing the running command in the HTML table without
+	// having the parse this odd mongo structure
 	command, err := json.Marshal(query["command"])
 	if err == nil {
 		q.Command = string(command)
