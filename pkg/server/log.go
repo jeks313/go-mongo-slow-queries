@@ -26,8 +26,11 @@ func LogHandler(r *mux.Router, route string, length int) {
 type statusResponseWriter struct {
 	http.ResponseWriter
 	statusCode int
+	length     int
 }
 
+// NewStatusReponseWriter creates a new response writer that is used to store
+// the status code of the response for later logging in the log middleware
 func NewStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
 	return &statusResponseWriter{
 		ResponseWriter: w,
@@ -35,9 +38,14 @@ func NewStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
 	}
 }
 
-func (sw *statusResponseWriter) WriteHeader(statusCode int) {
-	sw.statusCode = statusCode
-	sw.ResponseWriter.WriteHeader(statusCode)
+func (s *statusResponseWriter) Write(data []byte) (n int, err error) {
+	s.length += n
+	return s.ResponseWriter.Write(data)
+}
+
+func (s *statusResponseWriter) WriteHeader(statusCode int) {
+	s.statusCode = statusCode
+	s.ResponseWriter.WriteHeader(statusCode)
 }
 
 // RequestLoggerMiddleware takes care of logging all requests
@@ -47,11 +55,12 @@ func RequestLoggerMiddleware(r *mux.Router) mux.MiddlewareFunc {
 			start := time.Now()
 			sw := NewStatusReponseWriter(w)
 			defer func() {
-				slog.Info(req.URL.RawQuery,
+				slog.Info("request",
 					"method", req.Method,
-					"duration", time.Since(start),
-					"host", req.Host,
+					"duration_seconds", time.Since(start).Seconds(),
+					"url", req.URL.String(),
 					"path", req.URL.Path,
+					"size", sw.length,
 					"status", sw.statusCode)
 			}()
 			next.ServeHTTP(sw, req)
