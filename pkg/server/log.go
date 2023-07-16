@@ -31,7 +31,7 @@ type statusResponseWriter struct {
 
 // NewStatusReponseWriter creates a new response writer that is used to store
 // the status code of the response for later logging in the log middleware
-func NewStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
+func newStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
 	return &statusResponseWriter{
 		ResponseWriter: w,
 		statusCode:     http.StatusOK,
@@ -39,8 +39,9 @@ func NewStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
 }
 
 func (s *statusResponseWriter) Write(data []byte) (n int, err error) {
+	n, err = s.ResponseWriter.Write(data)
 	s.length += n
-	return s.ResponseWriter.Write(data)
+	return n, err
 }
 
 func (s *statusResponseWriter) WriteHeader(statusCode int) {
@@ -53,7 +54,7 @@ func RequestLoggerMiddleware(r *mux.Router) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			start := time.Now()
-			sw := NewStatusReponseWriter(w)
+			sw := newStatusReponseWriter(w)
 			defer func() {
 				slog.Info("request",
 					"method", req.Method,
