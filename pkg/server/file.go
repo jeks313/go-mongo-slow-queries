@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log/slog"
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/rs/zerolog/log"
 )
 
 // File serves up a file, optionally transforming it with a TransformFunc
@@ -31,7 +31,7 @@ func FormatMarkdown(f io.Reader) *bytes.Buffer {
 	buf := bytes.NewBuffer([]byte(""))
 	contents, err := ioutil.ReadAll(f)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to read input for formatting")
+		slog.Error("failed to read input for formatting", "error", err)
 		return buf
 	}
 	header := `<!DOCTYPE html><html><title>Docs</title><xmp theme="cerulean" style="display:block;">`

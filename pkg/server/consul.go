@@ -3,11 +3,11 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
 	consulapi "github.com/hashicorp/consul/api"
-	"github.com/rs/zerolog/log"
 )
 
 // ConsulOptions is the command line options for consul registration
@@ -68,7 +68,7 @@ func (c *ConsulRegistration) register() {
 		return
 	}
 
-	logger := log.With().Str("registration", "consul").Logger()
+	logger := slog.With("registration", "consul")
 
 	proto := "https"
 	check := &consulapi.AgentServiceCheck{
@@ -89,7 +89,7 @@ func (c *ConsulRegistration) register() {
 	err := c.client.Agent().ServiceRegister(registration)
 
 	if err != nil {
-		logger.Error().Err(err).Msg("failed to register service")
+		logger.Error("failed to register service", "error", err)
 		c.err = err
 	}
 }
@@ -107,14 +107,14 @@ var ErrNotConnected = errors.New("consul not connected")
 // Deregister will remove the service from consul
 func (c *ConsulRegistration) Deregister() error {
 	if c.client == nil {
-		log.Error().Msg("deregister: called, but consul not connected")
+		slog.Error("deregister: called, but consul not connected", "error", err)
 		return ErrNotConnected
 	}
 	err := c.client.Agent().ServiceDeregister(c.Name)
 	if err != nil {
-		log.Error().Err(err).Msg("deregister: failed to dereg service")
+		slog.Error("deregister: failed to dereg service", "error", err)
 		return err
 	}
-	log.Info().Msg("deregister: successful")
+	slog.Info("deregister: successful")
 	return nil
 }
