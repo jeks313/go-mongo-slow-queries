@@ -61,7 +61,7 @@ func RequestLoggerMiddleware(r *mux.Router) mux.MiddlewareFunc {
 
 // Log sets up default http logging
 func Log(r *mux.Router) {
-	return RequestLoggerMiddleware(r)
+	r.Use(RequestLoggerMiddleware(r))
 	/*
 		r.Use(hlog.AccessHandler(func(r *http.Request, status, size int, duration time.Duration) {
 			hlog.FromRequest(r).Info().

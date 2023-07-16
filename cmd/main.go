@@ -90,7 +90,7 @@ func main() {
 	r.Use(handlers.CompressHandler)
 
 	// setup logging
-	server.Log(r, log)
+	server.Log(r)
 
 	// default end points
 	server.Profiling(r, "/debug/pprof")

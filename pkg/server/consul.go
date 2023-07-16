@@ -101,13 +101,13 @@ func (c *ConsulRegistration) Register() error {
 	return c.err
 }
 
-// ErrorNotConnected returned when actions called but consul client not connected
+// ErrNotConnected returned when actions called but consul client not connected
 var ErrNotConnected = errors.New("consul not connected")
 
 // Deregister will remove the service from consul
 func (c *ConsulRegistration) Deregister() error {
 	if c.client == nil {
-		slog.Error("deregister: called, but consul not connected", "error", err)
+		slog.Error("deregister: called, but consul not connected")
 		return ErrNotConnected
 	}
 	err := c.client.Agent().ServiceDeregister(c.Name)
