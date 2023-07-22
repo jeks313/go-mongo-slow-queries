@@ -38,6 +38,13 @@ func newStatusReponseWriter(w http.ResponseWriter) *statusResponseWriter {
 	}
 }
 
+// Flush re-implement the flusher
+func (s *statusResponseWriter) Flush() {
+  if f, ok := s.ResponseWriter.(http.Flusher); ok {
+    f.Flush()
+  }
+}
+
 func (s *statusResponseWriter) Write(data []byte) (n int, err error) {
 	n, err = s.ResponseWriter.Write(data)
 	s.length += n
