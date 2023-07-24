@@ -1,9 +1,12 @@
 package server
 
 import (
+  "bufio"
 	"container/ring"
+  "errors"
 	"log/slog"
 	"net/http"
+  "net"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -43,6 +46,15 @@ func (s *statusResponseWriter) Flush() {
   if f, ok := s.ResponseWriter.(http.Flusher); ok {
     f.Flush()
   }
+}
+
+// Hijack re-implement the hijack interface
+func (s *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+    h, ok := s.ResponseWriter.(http.Hijacker)
+    if !ok {
+        return nil, nil, errors.New("hijack not supported")
+    }
+    return h.Hijack()
 }
 
 func (s *statusResponseWriter) Write(data []byte) (n int, err error) {
