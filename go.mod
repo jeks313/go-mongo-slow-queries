@@ -10,7 +10,6 @@ require (
 	github.com/hashicorp/consul/api v1.12.0
 	github.com/jessevdk/go-flags v1.5.0
 	github.com/joho/godotenv v1.4.0
-	github.com/markbates/pkger v0.17.1
 	github.com/prometheus/client_golang v1.11.0
 	github.com/rs/zerolog v1.26.1
 	github.com/smartystreets/goconvey v1.7.2
